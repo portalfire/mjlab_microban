@@ -92,4 +92,6 @@ uv run python src/mjlab_microban/scripts/export_onnx.py --checkpoint [path to yo
 
 ## License
 
+Copyright (c) 2026 Marc Duclusaud
+
 This software is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
