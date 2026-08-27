@@ -136,6 +136,27 @@ The reward weights are inherited from MjLab's own Go1 configuration, which is kn
 - **Falling over constantly, reward flat.** The first curriculum stage is asking too much; narrow the stage-0 ranges in `WALK_VELOCITY_STAGES`.
 - **Walking but twitchy.** Make `action_rate_l2` more negative.
 
+### Training on a cloud GPU
+
+mjlab needs an NVIDIA GPU, so training does not run on a Mac. The full 10,000-iteration flat run is a single-GPU job of roughly 3–6 hours, which is a few dollars on an RTX 4090 — pick a provider on convenience, not price. [RunPod](https://www.runpod.io/product/cloud-gpus)'s Community Cloud (~$0.34/hr for a 4090, billed by the second) is a reasonable default.
+
+On a fresh box:
+
+```
+curl -fsSL https://raw.githubusercontent.com/portalfire/mjlab_microban/claude/quadruped-walk-sim-5z0ff3/src/mjlab_microban/scripts/runpod_bootstrap.sh | bash
+```
+
+The script installs uv, clones into `/workspace` (the volume that survives a pod restart), syncs dependencies, validates the environment on the GPU, and starts training. It is safe to re-run — every step checks before it acts. Set `SETUP_ONLY=1` to stop after validation, or `NUM_ENVS`, `MAX_ITER`, `LOGGER` and `TASK` to change the run.
+
+Four things it handles that will otherwise cost you an afternoon:
+
+- **`CUDA_VISIBLE_DEVICES`.** mjlab's train script falls back to `device="cpu"` when this is empty, silently — a three-hour run becomes a multi-day one with no error. The script pins it from `nvidia-smi`.
+- **The `bam` dependency is declared over SSH.** A fresh box has no GitHub SSH key, so `uv sync` fails. `rhoban/bam` is public, so the script rewrites the transport to HTTPS via git's `insteadOf`, and falls back to editing `pyproject.toml` if that is not enough.
+- **The `bam` package-name fix is on a branch, not `main`.** The script merges `fix/bam-dep-name-and-protobuf-onnx` unless the checkout already contains it.
+- **Logging defaults to W&B.** The script uses TensorBoard unless you set `LOGGER=wandb` (and `WANDB_API_KEY`).
+
+Checkpoints land in `logs/rsl_rl/mjlab_quadruped_velocity/` inside `/workspace`. Pull one down and play it back locally — `play` builds the same environment, which also runs on CPU.
+
 ### Rough terrain and hardware
 
 Once a flat policy walks, `Mjlab-Velocity-Quadruped-Rough` adds generated terrain with MjLab's terrain-level curriculum, which promotes environments to harder tiles as they succeed.

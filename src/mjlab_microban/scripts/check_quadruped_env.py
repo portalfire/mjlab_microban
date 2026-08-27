@@ -17,12 +17,17 @@ Usage:
     # Model and config checks only (fast).
     uv run python src/mjlab_microban/scripts/check_quadruped_env.py
 
-    # Also build the environment and step it on CPU. Slower (warp compiles
-    # kernels on first run) but exercises the real simulation loop.
+    # Also build the environment and step it. Slower (warp compiles kernels on
+    # first run) but exercises the real simulation loop.
     uv run python src/mjlab_microban/scripts/check_quadruped_env.py --rollout 20
+
+    # On a GPU box, check the real training device.
+    uv run python src/mjlab_microban/scripts/check_quadruped_env.py \
+        --rollout 20 --device cuda:0
 """
 
 import argparse
+import os
 import re
 
 import mujoco
@@ -58,9 +63,41 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         metavar="N",
-        help="Build the env on CPU and step it N times (0 = skip).",
+        help="Build the env and step it N times (0 = skip).",
+    )
+    p.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device for the rollout, e.g. 'cpu' or 'cuda:0' (default: cpu).",
     )
     return p.parse_args()
+
+
+def report_device() -> None:
+    """Report what the simulation would actually run on.
+
+    mjlab's train script picks its device from ``CUDA_VISIBLE_DEVICES`` and
+    silently falls back to CPU when that variable is empty. On a GPU box that
+    turns a three-hour run into a multi-day one with no error message, so it is
+    worth one line of output before anything else.
+    """
+    import torch
+    import warp as wp
+
+    print("== device ==")
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    print(f"  CUDA_VISIBLE_DEVICES={cuda_visible!r}")
+    print(f"  torch.cuda.is_available()={torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"  torch device: {torch.cuda.get_device_name(0)}")
+    print(f"  warp devices: {[str(d) for d in wp.get_devices()]}")
+
+    if torch.cuda.is_available() and not cuda_visible:
+        print(
+            "  WARNING: a CUDA GPU is present but CUDA_VISIBLE_DEVICES is empty, "
+            "so `train` would run on CPU. Export it before training."
+        )
 
 
 def check_robot_model() -> None:
@@ -185,18 +222,20 @@ def check_configs() -> None:
             )
 
 
-def check_rollout(steps: int) -> None:
-    """Instantiate the environment on CPU and step it."""
+def check_rollout(steps: int, device: str) -> None:
+    """Instantiate the environment and step it."""
     import torch
     from mjlab.envs import ManagerBasedRlEnv
 
-    print(f"== rollout ({steps} steps on cpu) ==")
+    print(f"== rollout ({steps} steps on {device}) ==")
     cfg = make_quadruped_velocity_env_cfg(terrain="flat")
     cfg.scene.num_envs = 2
-    env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+    env = ManagerBasedRlEnv(cfg=cfg, device=device)
 
     obs, _ = env.reset()
-    action = torch.zeros(env.num_envs, env.action_manager.total_action_dim)
+    action = torch.zeros(
+        env.num_envs, env.action_manager.total_action_dim, device=device
+    )
     for _ in range(steps):
         obs, reward, terminated, truncated, _ = env.step(action)
 
@@ -212,11 +251,12 @@ def check_rollout(steps: int) -> None:
 
 def main() -> None:
     args = parse_args()
+    report_device()
     check_robot_model()
     check_standing()
     check_configs()
     if args.rollout:
-        check_rollout(args.rollout)
+        check_rollout(args.rollout, args.device)
     print("\nAll checks passed.")
 
 
