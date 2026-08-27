@@ -11,6 +11,8 @@ If you are interested in learning more about Microban, or even building your own
 The environments are built using the [MjLab](https://github.com/mujocolab/mjlab) framework.
 A velocity control task is currently implemented, allowing the robot to follow target linear and angular velocities while resisting external disturbances.
 
+A [quadruped locomotion task](#teaching-a-quadruped-to-walk) is also included, built on the Unitree Go1 that ships with MjLab.
+
 <br>
 <br>
 
@@ -81,6 +83,71 @@ uv run play Mjlab-Velocity-Microban --wandb-run-path [path to your wandb run]
 ```
 
 Where `[path to your wandb run]` is available in the Overview tab of your wandb run.
+
+## Teaching a quadruped to walk
+
+Alongside the Microban biped, this repository contains a quadruped locomotion task built on the [Unitree Go1](https://github.com/mujocolab/mjlab) that ships inside MjLab, so no extra assets are needed. The policy starts from random weights and is rewarded only for tracking a commanded body twist — there is no reference gait and no motion capture. The trot emerges from the velocity reward together with the foot clearance, swing height and slip shaping terms.
+
+Three tasks are registered:
+
+| Task | Terrain | Use it for |
+| --- | --- | --- |
+| `Mjlab-Velocity-Quadruped` | flat | Learning to walk from scratch. **Start here.** |
+| `Mjlab-Velocity-Quadruped-Rough` | generated rough terrain | Fine-tuning a flat-ground policy on uneven ground. |
+| `Mjlab-Velocity-Quadruped-Deploy` | flat | Retraining under hardware-realistic sensing and actuation. |
+
+No pre-trained quadruped checkpoint is shipped with the repository — the point of the task is to train one.
+
+### Check the environment before you train
+
+Training needs a GPU, but the configuration itself can be checked on CPU in a few seconds. This catches the class of mistake that actually happens in a locomotion config: a regex that matches no joint, a renamed foot site, a reward wired to a sensor that is not in the scene.
+
+```
+uv run python src/mjlab_microban/scripts/check_quadruped_env.py
+```
+
+It compiles the robot, verifies every name the task refers to, holds the default stance under gravity to confirm the robot supports its own weight, and builds all four config variants. Add `--rollout 20` to also construct the environment and step it — that path runs on CPU too, just slower.
+
+### Train
+
+```
+uv run train Mjlab-Velocity-Quadruped --env.scene.num-envs 4096
+```
+
+The commanded velocity range widens in three stages as training progresses (see `WALK_VELOCITY_STAGES` in `src/mjlab_microban/tasks/quadruped_velocity_env_cfg.py`). A policy that has never stood up cannot track 2 m/s, so the first stage asks for little more than a slow walk and the range opens once a gait exists.
+
+What to watch in the logs:
+
+- `Episode_Reward/track_linear_velocity` is the one that matters. It should climb steadily; a plateau near zero while the episode length stays short means the robot is falling rather than walking.
+- `Episode_Length` rising towards the 20 s episode limit means the robot has stopped falling over.
+- `Curriculum/command_vel/lin_vel_x_max` confirms the command curriculum has advanced.
+
+Then play the result back:
+
+```
+uv run play Mjlab-Velocity-Quadruped --checkpoint-file logs/rsl_rl/mjlab_quadruped_velocity/[date]/model_[number].pt
+```
+
+### If the gait looks wrong
+
+The reward weights are inherited from MjLab's own Go1 configuration, which is known to produce a walking policy on this robot — so treat them as the baseline to beat rather than the first thing to change. When the gait does go wrong, these are the knobs that matter, in the order worth trying:
+
+- **Shuffling, feet never leaving the ground.** Raise `air_time` (weight `0.0` by default for this robot) to reward longer swing phases, or make `foot_clearance` more negative.
+- **Falling over constantly, reward flat.** The first curriculum stage is asking too much; narrow the stage-0 ranges in `WALK_VELOCITY_STAGES`.
+- **Walking but twitchy.** Make `action_rate_l2` more negative.
+
+### Rough terrain and hardware
+
+Once a flat policy walks, `Mjlab-Velocity-Quadruped-Rough` adds generated terrain with MjLab's terrain-level curriculum, which promotes environments to harder tiles as they succeed.
+
+`Mjlab-Velocity-Quadruped-Deploy` is the configuration to train if the policy is meant to leave simulation. It differs from the flat task in four ways:
+
+- The base **linear velocity is removed from the actor** observation, because a real quadruped cannot measure it reliably. The critic keeps it — it only runs during training (asymmetric actor-critic).
+- The IMU channels get up to 15 ms of latency, on top of the noise the base task already applies.
+- The actuators get 5–15 ms of command delay.
+- Joint armature, joint friction and the trunk's inertial parameters are randomized per environment.
+
+Expect lower reward than the flat task. That is the cost of robustness, not a bug.
 
 ## Exporting a policy to ONNX
 
